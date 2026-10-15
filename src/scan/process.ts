@@ -18,9 +18,10 @@ const yieldToBrowser = () => new Promise((r) => setTimeout(r, 0));
 const to8 = (v: number) => Math.min(255, v / 16);
 
 export async function buildTextures(vol: Volume): Promise<Textures> {
-  const nx = vol.nx >> 1;
-  const ny = vol.ny >> 1;
-  const nz = vol.nz >> 1;
+  const downsample = vol.nx >= 512;
+  const nx = downsample ? vol.nx >> 1 : vol.nx;
+  const ny = downsample ? vol.ny >> 1 : vol.ny;
+  const nz = downsample ? vol.nz >> 1 : vol.nz;
   const half = new Float32Array(nx * ny * nz);
   const cx = (nx - 1) / 2;
   const cy = (ny - 1) / 2;
@@ -38,11 +39,15 @@ export async function buildTextures(vol: Volume): Promise<Textures> {
           half[o] = 0;
           continue;
         }
-        const b = 2 * z * sxy + 2 * y * sx + 2 * x;
-        const sum =
-          src[b] + src[b + 1] + src[b + sx] + src[b + sx + 1] +
-          src[b + sxy] + src[b + sxy + 1] + src[b + sxy + sx] + src[b + sxy + sx + 1];
-        half[o] = to8(sum / 8);
+        if (downsample) {
+          const b = 2 * z * sxy + 2 * y * sx + 2 * x;
+          const sum =
+            src[b] + src[b + 1] + src[b + sx] + src[b + sx + 1] +
+            src[b + sxy] + src[b + sxy + 1] + src[b + sxy + sx] + src[b + sxy + sx + 1];
+          half[o] = to8(sum / 8);
+        } else {
+          half[o] = to8(src[o]);
+        }
       }
     }
     if (z % 40 === 0) await yieldToBrowser();
@@ -83,26 +88,33 @@ function blur3d(v: Float32Array, nx: number, ny: number, nz: number, k: number[]
 /** Finds the curve of the teeth on a top-down view of the bite. */
 export function findArch(vol: Volume): Point[] {
   const { nx, ny, data } = vol;
+  const sx = nx / 512;
+  const sy = ny / 512;
+  const sz = vol.nz / 480;
   const mip = new Uint16Array(nx * ny);
-  for (let z = 190; z < Math.min(300, vol.nz); z += 2) {
+  const zStep = Math.max(1, Math.round(2 * sz));
+  for (let z = Math.round(190 * sz); z < Math.min(Math.round(300 * sz), vol.nz); z += zStep) {
     const off = z * nx * ny;
     for (let i = 0; i < nx * ny; i++) if (data[off + i] > mip[i]) mip[i] = data[off + i];
   }
   const cx = nx / 2;
-  const cy = 190;
+  const cy = 190 * sy;
+  const yLimit = 255 * sy;
+  const r0 = Math.round(40 * sx);
+  const r1 = Math.round(210 * sx);
   const found: Point[] = [];
   for (let k = 0; k < 90; k++) {
     const t = Math.PI * 0.85 + (k / 89) * Math.PI * 1.3;
     const dx = Math.cos(t);
     const dy = Math.sin(t);
     let best: [number, number, number, number] | null = null;
-    for (let r = 40; r < 210; r++) {
+    for (let r = r0; r < r1; r++) {
       const x = Math.round(cx + r * dx);
       const y = Math.round(cy + r * dy);
-      if (x < 0 || x >= nx || y < 0 || y >= ny || y > 255) break;
+      if (x < 0 || x >= nx || y < 0 || y >= ny || y > yLimit) break;
       const v = mip[y * nx + x];
       if (!best || v > best[0]) best = [v, x, y, r];
-      if (best[0] > 1800 && v < best[0] - 500 && r > best[3] + 8) break;
+      if (best[0] > 1800 && v < best[0] - 500 && r > best[3] + Math.round(8 * sx)) break;
     }
     if (best && best[0] > 1400) found.push([best[1], best[2]]);
   }
@@ -145,9 +157,10 @@ export function resample(points: Point[], n: number): Point[] {
 }
 
 /** Lengthens both ends of the tooth curve so the panoramic reaches the jaw corners. */
-export function panoramicCurve(arch: Point[]): Point[] {
+export function panoramicCurve(arch: Point[], scale = 1): Point[] {
   const pts = resample(arch, 200);
   const centerX = pts.reduce((a, p) => a + p[0], 0) / pts.length;
+  const steps = Math.max(1, Math.round(110 * scale));
   const tail = (p0: Point, p1: Point): Point[] => {
     let dx = p0[0] - p1[0];
     let dy = p0[1] - p1[1];
@@ -155,7 +168,7 @@ export function panoramicCurve(arch: Point[]): Point[] {
     dx = dx / len + Math.sign(p0[0] - centerX) * 0.45;
     dy = dy / len;
     const l2 = Math.hypot(dx, dy);
-    return Array.from({ length: 110 }, (_, s): Point => [p0[0] + (dx / l2) * (s + 1), p0[1] + (dy / l2) * (s + 1)]);
+    return Array.from({ length: steps }, (_, s): Point => [p0[0] + (dx / l2) * (s + 1), p0[1] + (dy / l2) * (s + 1)]);
   };
   const head = tail(pts[0], pts[6]).reverse();
   const end = tail(pts[pts.length - 1], pts[pts.length - 7]);
@@ -193,7 +206,12 @@ function sampleXY(vol: Volume, z: number, x: number, y: number): number {
 export type Gray = { pixels: Uint8Array; width: number; height: number };
 
 /** Averages a thick band along the jaw curve, like a panoramic X-ray film. */
-export function panoramic(vol: Volume, curve: Point[], zLo = 60, zHi = 400, half = 40): Gray {
+export function panoramic(vol: Volume, curve: Point[]): Gray {
+  const sz = vol.nz / 480;
+  const sxy = vol.nx / 512;
+  const zLo = Math.round(60 * sz);
+  const zHi = Math.min(vol.nz, Math.round(400 * sz));
+  const half = Math.max(1, Math.round(40 * sxy));
   const nrm = normals(curve);
   const width = curve.length;
   const height = zHi - zLo;
@@ -223,7 +241,12 @@ export function panoramic(vol: Volume, curve: Point[], zLo = 60, zHi = 400, half
 }
 
 /** Raw scan values on a vertical cut across the jaw at one point of the curve. */
-export function crossSection(vol: Volume, p: Point, n: Point, zLo = 100, zHi = 380, halfWidth = 70) {
+export function crossSection(vol: Volume, p: Point, n: Point) {
+  const sz = vol.nz / 480;
+  const sxy = vol.nx / 512;
+  const zLo = Math.round(100 * sz);
+  const zHi = Math.min(vol.nz, Math.round(380 * sz));
+  const halfWidth = Math.max(1, Math.round(70 * sxy));
   const width = halfWidth * 2 + 1;
   const height = zHi - zLo;
   const values = new Uint16Array(width * height);

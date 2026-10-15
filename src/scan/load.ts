@@ -38,6 +38,25 @@ async function loadFrom(source: SliceSource, onProgress: Progress): Promise<Volu
   return { data, nx: NX, ny: NY, nz };
 }
 
+/** Reads the single reduced scan shipped with the site. Values are 0–4080 in steps of 16. */
+export async function loadBuiltin(): Promise<Volume> {
+  const res = await fetch("/volume.cbct");
+  if (!res.ok) throw new Error("The built-in scan was not found.");
+  const raw = await gunzip(await res.arrayBuffer());
+  const view = new DataView(raw);
+  const magic = String.fromCharCode(view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3));
+  if (magic !== "CBCT") throw new Error("The built-in scan file is not a volume.");
+  const nx = view.getUint16(4, true);
+  const ny = view.getUint16(6, true);
+  const nz = view.getUint16(8, true);
+  const count = nx * ny * nz;
+  if (raw.byteLength !== 10 + count) throw new Error("The built-in scan file is incomplete.");
+  const bytes = new Uint8Array(raw, 10, count);
+  const data = new Uint16Array(count);
+  for (let i = 0; i < count; i++) data[i] = bytes[i] * 16;
+  return { data, nx, ny, nz };
+}
+
 /** Reads the slices that the dev server streams from the USB. */
 export async function loadFromUsb(onProgress: Progress): Promise<Volume> {
   const res = await fetch("/scan/index.json");

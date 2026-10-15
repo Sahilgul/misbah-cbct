@@ -1,6 +1,6 @@
 # misbah-cbct
 
-Browser viewer for a Sirona GALILEOS dental CBCT exported to USB. React, Vite, and TypeScript. The scan stays on the USB; this app only reads it.
+Browser viewer for a Sirona GALILEOS dental CBCT. React, Vite, and TypeScript. The scan is the single file `public/volume.cbct`, so the site works without the USB.
 
 ## Run
 
@@ -9,4 +9,4 @@ npm install
 npm run dev
 ```
 
-Open http://127.0.0.1:5173 with the USB plugged in. If the drive is mounted somewhere else, set `SCAN_ROOT` to that path before starting, or use the folder picker on the page.
+Open http://127.0.0.1:5173. Drag the 3D view to turn it and scroll to zoom.

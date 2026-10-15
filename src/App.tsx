@@ -4,7 +4,7 @@ import { Cuts, type Cut } from "./components/Cuts";
 import { Panoramic } from "./components/Panoramic";
 import { SliceViews } from "./components/SliceViews";
 import { Viewer3D } from "./components/Viewer3D";
-import { loadFromFiles, loadFromUsb, type Volume } from "./scan/load";
+import { loadBuiltin, loadFromFiles, type Volume } from "./scan/load";
 import {
   buildTextures, crossSection, findArch, normals, panoramic, panoramicCurve, resample,
   type Gray, type Point, type Textures,
@@ -28,8 +28,9 @@ async function prepare(vol: Volume, status: (s: string) => void): Promise<Ready>
   const textures = await buildTextures(vol);
   status("Finding the jaw line...");
   await new Promise((r) => setTimeout(r, 0));
+  const scale = vol.nx / 512;
   const arch = resample(findArch(vol), 480);
-  const pano = panoramic(vol, panoramicCurve(arch));
+  const pano = panoramic(vol, panoramicCurve(arch, scale));
   const nrm = normals(arch);
   const cuts = CUT_LABELS.map((label, i) => {
     const k = Math.round((i / (CUT_LABELS.length - 1)) * (arch.length - 1));
@@ -40,7 +41,7 @@ async function prepare(vol: Volume, status: (s: string) => void): Promise<Ready>
 
 export function App() {
   const [ready, setReady] = useState<Ready | null>(null);
-  const [status, setStatus] = useState("Reading the scan from the USB...");
+  const [status, setStatus] = useState("Reading the scan...");
   const [error, setError] = useState<string | null>(null);
   const [labColors, setLabColors] = useState(true);
   const [center, setCenter] = useState(1100);
@@ -61,21 +62,21 @@ export function App() {
   useEffect(() => {
     if (started.current) return;
     started.current = true;
-    run(() => loadFromUsb(progress));
+    run(() => loadBuiltin());
   }, []);
 
   const archDraw = useMemo(() => (ready ? ready.arch.filter((_, i) => i % 8 === 0) : []), [ready]);
   const start = useMemo(() => {
     if (!ready) return { x: 256, y: 256, z: 240 };
     const front = ready.arch[ready.arch.length >> 1];
-    return { x: Math.round(front[0]), y: Math.round(front[1]), z: 240 };
+    return { x: Math.round(front[0]), y: Math.round(front[1]), z: Math.round(240 * (ready.vol.nz / 480)) };
   }, [ready]);
 
   return (
     <main>
       <header>
         <h1>Dental CBCT</h1>
-        <p>Lab-style 3D, panoramic, and slice views rebuilt from the scan on the USB. For looking only; the dentist reads the scan.</p>
+        <p>Lab-style 3D, panoramic, and slice views. For looking only; the dentist reads the scan.</p>
       </header>
 
       {!ready && (
